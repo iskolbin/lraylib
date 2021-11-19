@@ -47,7 +47,7 @@ local function print_prelude(name, defines, includes)
 end
 
 local function analyze_structs_primitivity(api)
-	local is_primitive = {["char *"] = true, ["Texture"] = true}
+	local is_primitive = {["char *"] = true, ["Texture"] = true, ["bool"] = true}
 	for k in pairs(is_int) do
 		is_primitive[k] = true
 	end
@@ -100,7 +100,7 @@ local function from_lua(T, index, ref)
 	elseif T == "bool" then
 		return "lua_toboolean(L, " .. index .. ")"
 	else
-		return "(" .. T .. ")luaL_checkudata(L, " .. index .. ", \"" .. T .. "\")"
+		return (ref == 1 and "" or "*") .. "(" .. T .. (ref == 1 and "" or "*") .. ")luaL_checkudata(L, " .. index .. ", \"" .. T .. "\")"
 	end
 end
 
@@ -115,19 +115,22 @@ local function gen_function(f, api, is_primitive)
 	end
 	for i, param in ipairs(f.params or {}) do
 		local t = alias[param.type] or param.type
-		if not is_primitive[t] then
+		local _, ref = t:gsub("%*", "")
+		if not is_primitive[t] or ref > 1 then
 			print('  return luaL_error(L, "\'' .. f.name .. '\' is unimplemented, cannot convert \'' .. param.name .. '\' parameter of type \'' .. t .. '\'");\n}')
 			return
 		end
 	end
 	local rt = alias[f.returnType] or f.returnType
-	if f.returnType ~= "void" and not rt then--not is_primitive[f.returnType] then
+	local _, ref = rt:gsub("%*", "")
+	if rt ~= "void" and (not is_primitive[rt] or ref > 1) then
 		print('  return luaL_error(L, "\'' .. f.name .. '\' is unimplemented, cannot convert return parameter of type \'' .. f.returnType .. '\'");\n}')
 		return
 	end
 	local arg_names = {}
 	for i, param in ipairs(f.params or {}) do
-		print('  ' .. param.type .. ' ' .. param.name .. ' = ' .. from_lua(param.type, i) .. ';')
+		local _, ref = param.type:gsub("%*", "")
+		print('  ' .. param.type .. ' ' .. param.name .. ' = ' .. from_lua(param.type, i, ref) .. ';')
 		arg_names[i] = param.name
 	end
 	local call_function = f.name .. "(" .. table.concat(arg_names, ", ") .. ")"
