@@ -40,7 +40,15 @@ end
 
 local is_jsonable, is_primitive = {}, {}
 
-local pointers = {"void", "char", "unsigned char", "signed char", "short", "unsigned short", "int", "unsigned", "long", "unsigned long", "float", "double", "Matrix"}
+local pointers = {
+	"void",
+	"char", "unsigned char", "signed char",
+	"short", "unsigned short",
+	"int", "unsigned",
+	"long", "unsigned long",
+	"float", "double",
+	"Matrix",
+}
 
 local function convert_to_arr(T)
 	T = T:gsub("const ", "")
@@ -83,13 +91,15 @@ local function to_lua(name, T, len)
 	end
 end
 
-local function from_lua(T, index)
-	if is_int[T] then
+local function from_lua(T, index, len)
+	if T == "const char *" then
+		return "luaL_checkstring(L, " .. index .. ")"
+	elseif (is_int[T] or is_number[T] or T == "Matrix") and not_empty(len) then
+		return "((" .. convert_to_arr(T) .. "*)luaL_checkudata(L, " .. index .. ", \"" .. convert_to_arr(T) .. "\"))->data"
+	elseif is_int[T] then
 		return "luaL_checkinteger(L, " .. index .. ")"
 	elseif is_number[T] then
 		return "luaL_checknumber(L, " .. index .. ")"
-	elseif T == "const char *" then
-		return "luaL_checkstring(L, " .. index .. ")"
 	elseif T == "char *" then
 		return "(char *)luaL_checkstring(L, " .. index .. ")"
 	elseif T == "bool" then
@@ -151,7 +161,7 @@ print[[
 		print("  " .. name .. " *obj = (" .. name .. "*)luaL_checkudata(L, 1, \"" .. name .. "\");")
 		print("  int index = luaL_checkinteger(L, 2);")
 		if t ~= "void" then
-			print("  " .. to_lua("obj->data[index]", t))--, "obj->length"))
+			print("  " .. to_lua("obj->data[index]", t))
 		end
 		print("  return 1;")
 		print("}")
@@ -245,13 +255,49 @@ local function gen_function(f, api)
 	print("}")
 end
 
+local function gen_constructor(struct, api)
+	print("")
+	print("static int " .. binding_fun_name(struct.name) .. "New(lua_State *L) {")
+	local field_names = {}
+	for i, param in ipairs(struct.fields) do
+		local t = alias[param.type] or param.type
+		for n in param.name:gmatch("[A-z0-9]+") do
+			local n_, len = split_len(n)
+			if not_empty(len) then
+				local l = assert(tonumber(len), "Cannot generate constructor for " .. struct.name)
+				print("  " .. t .. " *" .. n_ .. " = " .. from_lua(t, #field_names+1, len) .. ';')
+				for j = 0, l-1 do
+					field_names[#field_names+1] = n_ .. "[" .. j .. "]"
+				end
+			else
+				print("  " .. t .. " " .. n .. " = " .. from_lua(t, #field_names+1, len) .. ';')
+				field_names[#field_names+1] = n_
+			end
+		end
+	end
+	print("  " .. struct.name .. " result = (" ..struct.name .. "){" .. table.concat(field_names, ", ") .. "};")
+	print("  " .. to_lua("result", struct.name))
+	print("  return 1;")
+	print("}")
+end
+
 local function generate_function_bindings(api)
 	for _, f in ipairs(api.functions) do
 		gen_function(f, api)
 	end
+	for _, struct in ipairs(api.structs) do
+		if is_jsonable[struct.name] then
+			gen_constructor(struct, api)
+		end
+	end
 	print("static const luaL_Reg LuaFunctionsList[] = {")
 	for _, f in ipairs(api.functions) do
 		print("  {\"" .. f.name .. "\", " .. binding_fun_name(f.name) .. "},")
+	end
+	for _, struct in ipairs(api.structs) do
+		if is_jsonable[struct.name] then
+			print("  {\"" .. struct.name .. "\", " .. binding_fun_name(struct.name) .. "New},")
+		end
 	end
 	print("  {NULL, NULL}")
 	print("};")
