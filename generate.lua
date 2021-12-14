@@ -1,3 +1,5 @@
+local VOID = -1
+
 local is_int = {
 	['int'] = true, ['unsigned'] = true, ['unsigned int'] = true,
 	['signed int'] = true, ['signed'] = true,
@@ -41,19 +43,25 @@ end
 local is_jsonable, is_primitive = {}, {}
 
 local pointers = {
-	"void",
 	"char", "unsigned char", "signed char",
 	"short", "unsigned short",
 	"int", "unsigned",
 	"long", "unsigned long",
 	"float", "double",
 	"Matrix",
+	"void",
 }
 
 local function convert_to_arr(T)
 	T = T:gsub("const ", "")
 	T = alias[T] or T
 	return T:sub(1,1):upper() .. T:sub(2):gsub("%s[a-z]", function(s) return s:sub(2):upper() end) .. "Pointer"
+end
+
+local function convert_to_upper(T)
+	T = T:gsub("const ", "")
+	T = alias[T] or T
+	return T:gsub("%s", function(s) return "_" end):upper()
 end
 
 local function not_empty(len)
@@ -114,6 +122,8 @@ local function from_lua(T, index, len)
 		elseif ref == 1 then
 			if is_primitive[T_] then
 				return "(" .. T .. ")((" .. convert_to_arr(T_) .. "*)luaL_checkudata(L, " .. index .. ", \"" .. convert_to_arr(T_) .. "\"))->data"
+			elseif index == 1 then
+				return "(" .. T_ .. "*)luaL_checkudata(L, " .. index .. ", \"" .. T_ .. "\")"
 			end
 		end
 	end
@@ -139,6 +149,8 @@ print[[
 		print('#include "' .. include .. '"')
 	end
 
+print("#define VOID_PSEUDOINDEX " .. tostring(VOID))
+
 print[[
 // Lua 5.1 compatibility
 #if (LUA_VERSION_NUM <= 501)
@@ -157,12 +169,32 @@ print[[
 		print("  " .. "int length;")
 		print("} " .. name .. ";")
 		print()
+	end
+	for _, t in ipairs(pointers) do
+		local name = convert_to_arr(t)
 		print("static int LuaIndex_" .. name .. "(lua_State *L) {")
 		print("  " .. name .. " *obj = (" .. name .. "*)luaL_checkudata(L, 1, \"" .. name .. "\");")
-		print("  int index = luaL_checkinteger(L, 2);")
 		if t ~= "void" then
+			print("  int index = luaL_checkinteger(L, 2);")
+			print("  if (index == VOID_PSEUDOINDEX) {VoidPointer *udata = lua_newuserdata(L, sizeof *udata); udata->data = obj->data; udata->length = obj->length*(sizeof *(obj->data)); luaL_setmetatable(L, \"VoidPointer\"); return 1;}")
 			print("  " .. to_lua("obj->data[index]", t))
+			print("  return 1;")
+		else
+			print("  const char *key = luaL_checkstring(L, 2);")
+			for _, tt in ipairs(pointers) do
+				if tt ~= "void" then
+					local len = nil
+					local T = convert_to_arr(tt)
+					print(("  if (!strcmp(key, \"%s\")) {%s *udata = lua_newuserdata(L, sizeof *udata); udata->data = obj->data; luaL_setmetatable(L, \"%s\"); udata->length = obj->length/(sizeof *(udata->data)); return 1;}"):format(T, T, T))
+				end
+			end
+			print("  return luaL_error(L,\"Cannot convert to unknown pointer type\");")
 		end
+		print("}")
+		print()
+		print("static int LuaLength_" .. name .. "(lua_State *L) {")
+		print("  " .. name .. " *obj = (" .. name .. "*)luaL_checkudata(L, 1, \"" .. name .. "\");")
+		print("  " .. to_lua("obj->length", "int"))
 		print("  return 1;")
 		print("}")
 		print()
@@ -214,6 +246,7 @@ local function gen_function(f, api)
 		print("// " .. f.description)
 		for arr, len in f.description:gmatch("length of (%w+) will be put in (%w+)") do
 			lengths[len], arrays[arr] = arr, len
+			print("// ", arr, "->", len)
 		end
 	end
 	print("static int " .. binding_fun_name(f.name) .. "(lua_State *L) {")
@@ -256,7 +289,7 @@ local function gen_function(f, api)
 end
 
 local function gen_constructor(struct, api)
-	print("")
+	print()
 	print("static int " .. binding_fun_name(struct.name) .. "New(lua_State *L) {")
 	local field_names = {}
 	for i, param in ipairs(struct.fields) do
@@ -265,18 +298,33 @@ local function gen_constructor(struct, api)
 			local n_, len = split_len(n)
 			if not_empty(len) then
 				local l = assert(tonumber(len), "Cannot generate constructor for " .. struct.name)
-				print("  " .. t .. " *" .. n_ .. " = " .. from_lua(t, #field_names+1, len) .. ';')
+				print("  " .. t .. " *" .. n_ .. " = " .. from_lua(t, i, len) .. ';')
 				for j = 0, l-1 do
 					field_names[#field_names+1] = n_ .. "[" .. j .. "]"
 				end
 			else
-				print("  " .. t .. " " .. n .. " = " .. from_lua(t, #field_names+1, len) .. ';')
+				print("  " .. t .. " " .. n .. " = " .. from_lua(t, i, len) .. ';')
 				field_names[#field_names+1] = n_
 			end
 		end
 	end
 	print("  " .. struct.name .. " result = (" ..struct.name .. "){" .. table.concat(field_names, ", ") .. "};")
 	print("  " .. to_lua("result", struct.name))
+	print("  return 1;")
+	print("}")
+end
+
+local function gen_pointer_constructor(pointer, api)
+	local t = convert_to_arr(pointer)
+	print()
+	print("static int " .. binding_fun_name(t) .. "New(lua_State *L) {")
+	print("  " .. t .. " *udata = lua_newuserdata(L, sizeof *udata); udata->data = NULL; udata->length = 0; luaL_setmetatable(L, \"" .. t .. "\");")
+	if pointer ~= "void" then
+		print("  int length = lua_gettop(L), i;")
+		print("  if (length <= 1) return 1;")
+		print("  for (i = 0; i < length-1; i++) udata->data[i] = " .. from_lua(pointer, "i+1") .. ";") 
+		print("  udata->length = length;")
+	end
 	print("  return 1;")
 	print("}")
 end
@@ -290,6 +338,9 @@ local function generate_function_bindings(api)
 			gen_constructor(struct, api)
 		end
 	end
+	for _, pointer in ipairs(pointers) do
+		gen_pointer_constructor(pointer, api)
+	end
 	print("static const luaL_Reg LuaFunctionsList[] = {")
 	for _, f in ipairs(api.functions) do
 		print("  {\"" .. f.name .. "\", " .. binding_fun_name(f.name) .. "},")
@@ -298,6 +349,9 @@ local function generate_function_bindings(api)
 		if is_jsonable[struct.name] then
 			print("  {\"" .. struct.name .. "\", " .. binding_fun_name(struct.name) .. "New},")
 		end
+	end
+	for _, pointer in ipairs(pointers) do
+			print("  {\"" .. convert_to_arr(pointer) .. "\", " .. binding_fun_name(convert_to_arr(pointer)) .. "New},")
 	end
 	print("  {NULL, NULL}")
 	print("};")
@@ -334,6 +388,8 @@ local function register_structs(api)
 		print("  luaL_newmetatable(L, \"" .. s_name .. "\");")
 		print("  lua_pushcfunction(L, &LuaIndex_" .. s_name .. ");")
 		print("  lua_setfield(L, -2, \"__index\");")
+		print("  lua_pushcfunction(L, &LuaLength_" .. s_name .. ");")
+		print("  lua_setfield(L, -2, \"__len\");")
 		print("  lua_pop(L, 1);")
 		print()
 	end
@@ -366,6 +422,14 @@ local function register_colors(api)
 	end
 end
 
+local function register_null_pointers(api)
+	for _, pointer in ipairs(pointers) do
+		print("  {" .. convert_to_arr(pointer) .. " *udata = lua_newuserdata(L, sizeof *udata); udata->data = NULL; udata->length = 0; luaL_setmetatable(L, \"" .. convert_to_arr(pointer) ..  "\");")
+		print("  lua_setfield(L, -2, \"NULL_" .. convert_to_upper(pointer) .. "\");}")
+		print()
+	end
+end
+
 local function generate_lua_bindings(name, api)	
 	is_primitive, is_jsonable = analyze_structs_primitivity(api)
 	print_prelude(name)
@@ -376,6 +440,10 @@ local function generate_lua_bindings(name, api)
 	register_structs(api)
 	register_enums(api)
 	register_colors(api)
+	register_null_pointers(api)
+	print("  lua_pushinteger(L, VOID_PSEUDOINDEX);")
+	print("  lua_setfield(L, -2, \"VOID\");")
+	print()
 	print("  return 1;")
 	print("}")
 end
