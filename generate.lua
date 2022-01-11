@@ -440,7 +440,7 @@ local function generate_lua_bindings(name, api, defines, includes)
 	generate_struct_bindings(api)
 	generate_function_bindings(api)
 	print("LUAMOD_API int luaopen_" .. name .. "(lua_State *L) {")
-  print("  luaL_newlib(L, LuaFunctionsList);")
+	print("  luaL_newlib(L, LuaFunctionsList);")
 	register_structs(api)
 	register_enums(api)
 	register_constants(api)
@@ -452,6 +452,23 @@ local function generate_lua_bindings(name, api, defines, includes)
 	print("}")
 end
 
-local path, name, module_name, defines, includes = ...
+local path = ...
 package.path = package.path .. ';' .. path
-generate_lua_bindings(name, require(module_name), defines, includes)
+
+local api = {structs = {}, enums = {}, defines = {}, functions = {}}
+for _, k in ipairs{"structs", "enums", "defines", "functions"} do
+	local cache = {}
+	for _, lib_name in ipairs{"raylib_api", "easings_api", "raymath_api", "raygui_api"} do
+	local lib = require(lib_name)
+		if not lib[k] then
+			print(lib_name)
+			error(k)
+		end
+		for _, v in ipairs(lib[k]) do if not cache[v.name] then
+			cache[v.name] = v.name
+			api[k][#api[k]+1] = v
+		end end
+	end
+end
+
+generate_lua_bindings("raylib", api, "RAYGUI_IMPLEMENTATION", "raylib raymath extras/easings extras/raygui")
