@@ -2,7 +2,7 @@ CC?=cc
 RAYLIB?=../raylib
 LUA?=/usr/include/lua5.3
 
-binding:
+bind:
 	lua generate.lua "$(RAYLIB)/parser/?.lua" > lraylib.c
 
 so:
