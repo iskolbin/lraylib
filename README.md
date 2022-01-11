@@ -24,12 +24,12 @@ RAYLIB=../raylib LUA=/usr/include/lua5.3 make bind
 
 ### Linux
 
-- You can compile shared `raylib.so`, you can redefine used compiler, by default:
+- Compile shared `raylib.so`, you can redefine used compiler, by default:
 ```
 CC=cc make so
 ```
 
-- Finally, you can use it in REPL (don't mess with lua version number, it must be the same as on step 3):
+- Now you can use it even in REPL (don't mess with lua version number, it must be the same as on step 3):
 ```
 lua5.3
 Lua 5.3.3  Copyright (C) 1994-2016 Lua.org, PUC-Rio
